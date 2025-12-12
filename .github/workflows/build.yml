@@ -1,0 +1,133 @@
+name: Build Voice Manager
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ffmpeg
+        run: choco install ffmpeg -y
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyQt6 pilk pydub pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name "语音包管理器" `
+            --add-binary "C:\ProgramData\chocolatey\bin\ffmpeg.exe;." `
+            --add-binary "C:\ProgramData\chocolatey\bin\ffprobe.exe;." `
+            --hidden-import pilk `
+            --hidden-import pilk._pilk `
+            --hidden-import pydub `
+            --hidden-import pydub.utils `
+            --collect-all pilk `
+            voice_manager.py
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceManager-Windows
+          path: dist/语音包管理器/
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PyQt6 pilk pydub pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --onedir --windowed --name "语音包管理器" \
+            --add-binary "/opt/homebrew/bin/ffmpeg:." \
+            --add-binary "/opt/homebrew/bin/ffprobe:." \
+            --hidden-import pilk \
+            --hidden-import pilk._pilk \
+            --hidden-import pydub \
+            --hidden-import pydub.utils \
+            --collect-all pilk \
+            voice_manager.py
+
+      - name: Create macOS App Bundle
+        run: |
+          # 移动到 .app 结构
+          mkdir -p "dist/语音包管理器.app/Contents/MacOS"
+          mkdir -p "dist/语音包管理器.app/Contents/Frameworks"
+          mv dist/语音包管理器/* "dist/语音包管理器.app/Contents/MacOS/"
+          # 移动 ffmpeg 到 Frameworks
+          mv "dist/语音包管理器.app/Contents/MacOS/ffmpeg" "dist/语音包管理器.app/Contents/Frameworks/" || true
+          mv "dist/语音包管理器.app/Contents/MacOS/ffprobe" "dist/语音包管理器.app/Contents/Frameworks/" || true
+          # 创建 Info.plist
+          cat > "dist/语音包管理器.app/Contents/Info.plist" << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>语音包管理器</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.voicemanager.app</string>
+              <key>CFBundleName</key>
+              <string>语音包管理器</string>
+              <key>CFBundleVersion</key>
+              <string>1.0.0</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceManager-macOS
+          path: dist/语音包管理器.app/
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create ZIP archives
+        run: |
+          cd VoiceManager-Windows && zip -r ../VoiceManager-Windows.zip . && cd ..
+          cd VoiceManager-macOS && zip -r ../VoiceManager-macOS.zip . && cd ..
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            VoiceManager-Windows.zip
+            VoiceManager-macOS.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
