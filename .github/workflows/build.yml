@@ -6,7 +6,7 @@ on:
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -20,7 +20,11 @@ jobs:
           python-version: '3.11'
 
       - name: Install ffmpeg
-        run: choco install ffmpeg -y
+        run: |
+          choco install ffmpeg -y
+          # 显示 ffmpeg 位置
+          where ffmpeg
+          ffmpeg -version
 
       - name: Install dependencies
         run: |
@@ -28,10 +32,17 @@ jobs:
           pip install PyQt6 pilk pydub pyinstaller
 
       - name: Build with PyInstaller
+        shell: pwsh
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "语音包管理器" `
-            --add-binary "C:\ProgramData\chocolatey\bin\ffmpeg.exe;." `
-            --add-binary "C:\ProgramData\chocolatey\bin\ffprobe.exe;." `
+          # 查找 ffmpeg 路径
+          $ffmpegPath = (Get-Command ffmpeg).Source
+          $ffprobePath = (Get-Command ffprobe).Source
+          Write-Host "ffmpeg path: $ffmpegPath"
+          Write-Host "ffprobe path: $ffprobePath"
+
+          pyinstaller --noconfirm --onedir --windowed --name "VoiceManager" `
+            --add-binary "$ffmpegPath;." `
+            --add-binary "$ffprobePath;." `
             --hidden-import pilk `
             --hidden-import pilk._pilk `
             --hidden-import pydub `
@@ -39,14 +50,26 @@ jobs:
             --collect-all pilk `
             voice_manager.py
 
+      - name: Verify build
+        shell: pwsh
+        run: |
+          Write-Host "Build contents:"
+          Get-ChildItem -Recurse dist/VoiceManager/ | Select-Object FullName
+          Write-Host "Checking ffmpeg:"
+          if (Test-Path "dist/VoiceManager/ffmpeg.exe") {
+            Write-Host "ffmpeg.exe found!"
+          } else {
+            Write-Host "WARNING: ffmpeg.exe not found!"
+          }
+
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: VoiceManager-Windows
-          path: dist/语音包管理器/
+          path: dist/VoiceManager/
 
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-13  # Intel Mac
     steps:
       - uses: actions/checkout@v4
 
@@ -56,7 +79,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install ffmpeg
-        run: brew install ffmpeg
+        run: |
+          brew install ffmpeg
+          which ffmpeg
+          ffmpeg -version
 
       - name: Install dependencies
         run: |
@@ -65,50 +91,44 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller --noconfirm --onedir --windowed --name "语音包管理器" \
-            --add-binary "/opt/homebrew/bin/ffmpeg:." \
-            --add-binary "/opt/homebrew/bin/ffprobe:." \
+          # 查找 ffmpeg 路径
+          FFMPEG_PATH=$(which ffmpeg)
+          FFPROBE_PATH=$(which ffprobe)
+          echo "ffmpeg path: $FFMPEG_PATH"
+          echo "ffprobe path: $FFPROBE_PATH"
+
+          pyinstaller --noconfirm --onedir --windowed --name "VoiceManager" \
+            --add-binary "$FFMPEG_PATH:Frameworks" \
+            --add-binary "$FFPROBE_PATH:Frameworks" \
             --hidden-import pilk \
             --hidden-import pilk._pilk \
             --hidden-import pydub \
             --hidden-import pydub.utils \
             --collect-all pilk \
+            --osx-bundle-identifier com.voicemanager.app \
             voice_manager.py
 
-      - name: Create macOS App Bundle
+      - name: Verify and fix macOS App Bundle
         run: |
-          # 移动到 .app 结构
-          mkdir -p "dist/语音包管理器.app/Contents/MacOS"
-          mkdir -p "dist/语音包管理器.app/Contents/Frameworks"
-          mv dist/语音包管理器/* "dist/语音包管理器.app/Contents/MacOS/"
-          # 移动 ffmpeg 到 Frameworks
-          mv "dist/语音包管理器.app/Contents/MacOS/ffmpeg" "dist/语音包管理器.app/Contents/Frameworks/" || true
-          mv "dist/语音包管理器.app/Contents/MacOS/ffprobe" "dist/语音包管理器.app/Contents/Frameworks/" || true
-          # 创建 Info.plist
-          cat > "dist/语音包管理器.app/Contents/Info.plist" << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>语音包管理器</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.voicemanager.app</string>
-              <key>CFBundleName</key>
-              <string>语音包管理器</string>
-              <key>CFBundleVersion</key>
-              <string>1.0.0</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-          </dict>
-          </plist>
-          EOF
+          echo "Build contents:"
+          ls -la dist/
+
+          # PyInstaller with --windowed on macOS creates .app automatically
+          if [ -d "dist/VoiceManager.app" ]; then
+            echo "App bundle created successfully"
+            ls -la "dist/VoiceManager.app/Contents/"
+            ls -la "dist/VoiceManager.app/Contents/MacOS/" || true
+            ls -la "dist/VoiceManager.app/Contents/Frameworks/" || true
+          else
+            echo "ERROR: App bundle not created!"
+            ls -la dist/
+          fi
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: VoiceManager-macOS
-          path: dist/语音包管理器.app/
+          path: dist/VoiceManager.app/
 
   release:
     needs: [build-windows, build-macos]
