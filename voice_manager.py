@@ -126,11 +126,39 @@ class AudioConverter:
         """获取 ffmpeg 路径"""
         import platform
         is_windows = platform.system() == 'Windows'
+        is_macos = platform.system() == 'Darwin'
         ffmpeg_name = 'ffmpeg.exe' if is_windows else 'ffmpeg'
 
-        # 优先使用系统安装的 ffmpeg，避免与 PyQt6 的库冲突
+        # 打包后的应用：优先使用打包目录中的 ffmpeg
+        if getattr(sys, 'frozen', False):
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstaller onefile 模式
+                ffmpeg = os.path.join(sys._MEIPASS, ffmpeg_name)
+                if os.path.exists(ffmpeg):
+                    return ffmpeg
+            else:
+                # PyInstaller onedir 模式
+                base_path = os.path.dirname(sys.executable)
+                if is_windows:
+                    # Windows: exe 同目录或 _internal 目录
+                    candidates = [
+                        os.path.join(base_path, ffmpeg_name),
+                        os.path.join(base_path, '_internal', ffmpeg_name),
+                    ]
+                    for ffmpeg in candidates:
+                        if os.path.exists(ffmpeg):
+                            return ffmpeg
+                elif is_macos:
+                    # macOS: Frameworks 目录
+                    app_path = os.path.dirname(os.path.dirname(base_path))
+                    ffmpeg = os.path.join(app_path, 'Frameworks', ffmpeg_name)
+                    if os.path.exists(ffmpeg):
+                        return ffmpeg
+
+        # 未打包或打包目录中没有 ffmpeg：使用系统安装的版本
         if is_windows:
             system_ffmpeg_paths = [
+                r'C:\ProgramData\chocolatey\bin\ffmpeg.exe',  # Chocolatey
                 os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'ffmpeg', 'bin', 'ffmpeg.exe'),
                 os.path.join(os.environ.get('ProgramFiles', ''), 'ffmpeg', 'bin', 'ffmpeg.exe'),
                 os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'ffmpeg', 'bin', 'ffmpeg.exe'),
@@ -146,26 +174,6 @@ class AudioConverter:
         for path in system_ffmpeg_paths:
             if path and os.path.exists(path):
                 return path
-
-        # 如果系统没有 ffmpeg，尝试使用打包的版本
-        if getattr(sys, 'frozen', False):
-            if hasattr(sys, '_MEIPASS'):
-                # PyInstaller onefile 模式
-                ffmpeg = os.path.join(sys._MEIPASS, ffmpeg_name)
-            else:
-                # PyInstaller onedir 模式
-                base_path = os.path.dirname(sys.executable)
-                if is_windows:
-                    # Windows: exe 同目录或 _internal 目录
-                    ffmpeg = os.path.join(base_path, ffmpeg_name)
-                    if not os.path.exists(ffmpeg):
-                        ffmpeg = os.path.join(base_path, '_internal', ffmpeg_name)
-                else:
-                    # macOS: Frameworks 目录
-                    app_path = os.path.dirname(os.path.dirname(base_path))
-                    ffmpeg = os.path.join(app_path, 'Frameworks', ffmpeg_name)
-            if os.path.exists(ffmpeg):
-                return ffmpeg
 
         return ffmpeg_name  # 使用 PATH 中的 ffmpeg
 
@@ -195,6 +203,7 @@ class AudioConverter:
             # 设置环境变量，避免库冲突
             import platform
             env = os.environ.copy()
+
             if getattr(sys, 'frozen', False):
                 if platform.system() == 'Darwin':
                     # macOS: 清除可能导致冲突的库路径
@@ -204,17 +213,20 @@ class AudioConverter:
                     # 设置 DYLD_LIBRARY_PATH 指向系统库，避免加载 PyQt6 的 FFmpeg 库
                     env['DYLD_LIBRARY_PATH'] = '/usr/lib:/usr/local/lib:/opt/homebrew/lib'
                 elif platform.system() == 'Windows':
-                    # Windows: 确保系统 ffmpeg 路径在 PATH 最前面
-                    system_paths = [
-                        r'C:\ffmpeg\bin',
-                        os.path.join(os.environ.get('ProgramFiles', ''), 'ffmpeg', 'bin'),
-                        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'ffmpeg', 'bin'),
-                    ]
-                    existing_paths = [p for p in system_paths if p and os.path.exists(p)]
-                    if existing_paths:
-                        env['PATH'] = os.pathsep.join(existing_paths) + os.pathsep + env.get('PATH', '')
+                    # Windows: 清理 PATH，移除可能包含 PyQt6 库的路径
+                    base_path = os.path.dirname(sys.executable)
+                    # 将 ffmpeg 所在目录添加到 PATH 最前面
+                    ffmpeg_dir = os.path.dirname(ffmpeg)
+                    if os.path.exists(ffmpeg_dir):
+                        env['PATH'] = ffmpeg_dir + os.pathsep + env.get('PATH', '')
 
-            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            # 运行 ffmpeg
+            if platform.system() == 'Windows':
+                # Windows 上使用 CREATE_NO_WINDOW 标志避免弹出命令行窗口
+                creation_flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0x08000000
+                result = subprocess.run(cmd, capture_output=True, text=True, env=env, creationflags=creation_flags)
+            else:
+                result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             if result.returncode != 0:
                 print(f"ffmpeg 错误: {result.stderr}")
                 return None
