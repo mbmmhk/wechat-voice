@@ -125,4 +125,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: VoiceManager-macOS
-          path: dist/VoiceManager.app/
+          path: dist/VoiceManager.app
