@@ -14,144 +14,87 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Download and setup ffmpeg
+      - name: Download ffmpeg (static build)
         shell: pwsh
         run: |
-          # 下载静态编译的 ffmpeg (gyan.dev 提供的 essentials 版本，约80MB)
-          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-          $ffmpegZip = "ffmpeg.zip"
-          $ffmpegDir = "ffmpeg-static"
-          
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
           Write-Host "Downloading ffmpeg..."
-          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip
-          
-          Write-Host "Extracting ffmpeg..."
-          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir -Force
-          
-          # 找到 bin 目录
-          $binDir = Get-ChildItem -Path $ffmpegDir -Recurse -Directory | Where-Object { $_.Name -eq "bin" } | Select-Object -First 1
-          Write-Host "Found bin directory: $($binDir.FullName)"
-          
-          # 列出文件
-          Get-ChildItem $binDir.FullName
-          
-          # 设置环境变量供后续步骤使用
-          echo "FFMPEG_DIR=$($binDir.FullName)" >> $env:GITHUB_ENV
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-static -Force
+          $bin = Get-ChildItem -Path ffmpeg-static -Recurse -Directory | Where-Object { $_.Name -eq "bin" } | Select-Object -First 1
+          Write-Host "Found: $($bin.FullName)"
+          Get-ChildItem $bin.FullName
+          echo "FFMPEG_DIR=$($bin.FullName)" >> $env:GITHUB_ENV
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install PyQt6 pilk pydub pyinstaller
+        run: pip install PyQt6 pilk pydub pyinstaller
 
-      - name: Build with PyInstaller
+      - name: Build
         shell: pwsh
         run: |
-          $ffmpegPath = "$env:FFMPEG_DIR\ffmpeg.exe"
-          $ffprobePath = "$env:FFMPEG_DIR\ffprobe.exe"
-          
-          Write-Host "ffmpeg: $ffmpegPath"
-          Write-Host "ffprobe: $ffprobePath"
-          
-          # 验证文件存在
-          if (-not (Test-Path $ffmpegPath)) {
-            Write-Error "ffmpeg.exe not found!"
-            exit 1
-          }
-          
+          $ffmpeg = "$env:FFMPEG_DIR\ffmpeg.exe"
+          $ffprobe = "$env:FFMPEG_DIR\ffprobe.exe"
+          if (-not (Test-Path $ffmpeg)) { Write-Error "ffmpeg not found"; exit 1 }
           pyinstaller --noconfirm --onedir --windowed --name "VoiceManager" `
-            --add-binary "$ffmpegPath;." `
-            --add-binary "$ffprobePath;." `
-            --hidden-import pilk `
-            --hidden-import pilk._pilk `
-            --hidden-import pydub `
-            --hidden-import pydub.utils `
-            --collect-all pilk `
-            voice_manager.py
+            --add-binary "$ffmpeg;." --add-binary "$ffprobe;." `
+            --hidden-import pilk --hidden-import pilk._pilk `
+            --hidden-import pydub --hidden-import pydub.utils `
+            --collect-all pilk voice_manager.py
 
-      - name: Verify build
+      - name: Verify
         shell: pwsh
         run: |
-          Write-Host "=== Build contents ==="
           Get-ChildItem dist/VoiceManager/ | Format-Table Name, Length
-          
           if (Test-Path "dist/VoiceManager/ffmpeg.exe") {
-            $size = (Get-Item "dist/VoiceManager/ffmpeg.exe").Length / 1MB
-            Write-Host "ffmpeg.exe found! Size: $([math]::Round($size, 2)) MB"
-            
-            # 测试 ffmpeg 是否可以运行
+            $s = (Get-Item "dist/VoiceManager/ffmpeg.exe").Length / 1MB
+            Write-Host "ffmpeg.exe: $([math]::Round($s,2)) MB"
             & "dist/VoiceManager/ffmpeg.exe" -version
-          } else {
-            Write-Error "ffmpeg.exe NOT found!"
-            exit 1
-          }
+          } else { Write-Error "ffmpeg NOT found"; exit 1 }
 
-      - name: Upload Windows artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: VoiceManager-Windows
           path: dist/VoiceManager/
 
   build-macos:
-    runs-on: macos-14  # Apple Silicon Mac
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install ffmpeg
-        run: |
-          brew install ffmpeg
-          which ffmpeg
-          ffmpeg -version
+        run: brew install ffmpeg
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install PyQt6 pilk pydub pyinstaller
+        run: pip install PyQt6 pilk pydub pyinstaller
 
-      - name: Build with PyInstaller
+      - name: Build
         run: |
           FFMPEG=$(which ffmpeg)
           FFPROBE=$(which ffprobe)
-          echo "ffmpeg: $FFMPEG"
-          echo "ffprobe: $FFPROBE"
-          
           pyinstaller --noconfirm --onedir --windowed --name "VoiceManager" \
-            --add-binary "$FFMPEG:Frameworks" \
-            --add-binary "$FFPROBE:Frameworks" \
-            --hidden-import pilk \
-            --hidden-import pilk._pilk \
-            --hidden-import pydub \
-            --hidden-import pydub.utils \
-            --collect-all pilk \
-            --osx-bundle-identifier com.voicemanager.app \
+            --add-binary "$FFMPEG:Frameworks" --add-binary "$FFPROBE:Frameworks" \
+            --hidden-import pilk --hidden-import pilk._pilk \
+            --hidden-import pydub --hidden-import pydub.utils \
+            --collect-all pilk --osx-bundle-identifier com.voicemanager.app \
             voice_manager.py
 
-      - name: Verify build
+      - name: Verify
         run: |
-          echo "=== Build contents ==="
           ls -la dist/VoiceManager.app/Contents/Frameworks/ || true
-          
           if [ -f "dist/VoiceManager.app/Contents/Frameworks/ffmpeg" ]; then
-            echo "ffmpeg found!"
             dist/VoiceManager.app/Contents/Frameworks/ffmpeg -version
           else
-            echo "ERROR: ffmpeg NOT found!"
-            exit 1
+            echo "ERROR: ffmpeg NOT found"; exit 1
           fi
 
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: VoiceManager-macOS
           path: dist/VoiceManager.app/
-
