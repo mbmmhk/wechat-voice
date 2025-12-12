@@ -92,6 +92,8 @@ jobs:
         run: |
           FFMPEG=$(which ffmpeg)
           FFPROBE=$(which ffprobe)
+          echo "ffmpeg source: $FFMPEG"
+
           pyinstaller --noconfirm --onedir --windowed --name "VoiceManager" \
             --add-binary "$FFMPEG:Frameworks" --add-binary "$FFPROBE:Frameworks" \
             --hidden-import pilk --hidden-import pilk._pilk \
@@ -99,10 +101,22 @@ jobs:
             --collect-all pilk --osx-bundle-identifier com.voicemanager.app \
             voice_manager.py
 
+          # PyInstaller 6.x 可能不会正确复制二进制文件，手动复制确保存在
+          FRAMEWORKS_DIR="dist/VoiceManager.app/Contents/Frameworks"
+          if [ ! -f "$FRAMEWORKS_DIR/ffmpeg" ]; then
+            echo "Copying ffmpeg to Frameworks..."
+            cp "$FFMPEG" "$FRAMEWORKS_DIR/"
+            cp "$FFPROBE" "$FRAMEWORKS_DIR/"
+            chmod +x "$FRAMEWORKS_DIR/ffmpeg" "$FRAMEWORKS_DIR/ffprobe"
+          fi
+
       - name: Verify
         run: |
-          ls -la dist/VoiceManager.app/Contents/Frameworks/ || true
+          echo "=== Frameworks contents (executables) ==="
+          ls -la dist/VoiceManager.app/Contents/Frameworks/ | grep -E "^-.*x" | head -20
+
           if [ -f "dist/VoiceManager.app/Contents/Frameworks/ffmpeg" ]; then
+            echo "ffmpeg found!"
             dist/VoiceManager.app/Contents/Frameworks/ffmpeg -version
           else
             echo "ERROR: ffmpeg NOT found"; exit 1
