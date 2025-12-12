@@ -1,11 +1,12 @@
+# Build Voice Manager
+# Author: Sam Gu
+
 name: Build Voice Manager
 
 on:
   push:
     branches: [ main, master ]
     tags: [ 'v*' ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -19,12 +20,29 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install ffmpeg
+      - name: Download and setup ffmpeg
+        shell: pwsh
         run: |
-          choco install ffmpeg -y
-          # 显示 ffmpeg 位置
-          where ffmpeg
-          ffmpeg -version
+          # 下载静态编译的 ffmpeg (gyan.dev 提供的 essentials 版本，约80MB)
+          $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          $ffmpegZip = "ffmpeg.zip"
+          $ffmpegDir = "ffmpeg-static"
+          
+          Write-Host "Downloading ffmpeg..."
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip
+          
+          Write-Host "Extracting ffmpeg..."
+          Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir -Force
+          
+          # 找到 bin 目录
+          $binDir = Get-ChildItem -Path $ffmpegDir -Recurse -Directory | Where-Object { $_.Name -eq "bin" } | Select-Object -First 1
+          Write-Host "Found bin directory: $($binDir.FullName)"
+          
+          # 列出文件
+          Get-ChildItem $binDir.FullName
+          
+          # 设置环境变量供后续步骤使用
+          echo "FFMPEG_DIR=$($binDir.FullName)" >> $env:GITHUB_ENV
 
       - name: Install dependencies
         run: |
@@ -34,12 +52,18 @@ jobs:
       - name: Build with PyInstaller
         shell: pwsh
         run: |
-          # 查找 ffmpeg 路径
-          $ffmpegPath = (Get-Command ffmpeg).Source
-          $ffprobePath = (Get-Command ffprobe).Source
-          Write-Host "ffmpeg path: $ffmpegPath"
-          Write-Host "ffprobe path: $ffprobePath"
-
+          $ffmpegPath = "$env:FFMPEG_DIR\ffmpeg.exe"
+          $ffprobePath = "$env:FFMPEG_DIR\ffprobe.exe"
+          
+          Write-Host "ffmpeg: $ffmpegPath"
+          Write-Host "ffprobe: $ffprobePath"
+          
+          # 验证文件存在
+          if (-not (Test-Path $ffmpegPath)) {
+            Write-Error "ffmpeg.exe not found!"
+            exit 1
+          }
+          
           pyinstaller --noconfirm --onedir --windowed --name "VoiceManager" `
             --add-binary "$ffmpegPath;." `
             --add-binary "$ffprobePath;." `
@@ -53,13 +77,18 @@ jobs:
       - name: Verify build
         shell: pwsh
         run: |
-          Write-Host "Build contents:"
-          Get-ChildItem -Recurse dist/VoiceManager/ | Select-Object FullName
-          Write-Host "Checking ffmpeg:"
+          Write-Host "=== Build contents ==="
+          Get-ChildItem dist/VoiceManager/ | Format-Table Name, Length
+          
           if (Test-Path "dist/VoiceManager/ffmpeg.exe") {
-            Write-Host "ffmpeg.exe found!"
+            $size = (Get-Item "dist/VoiceManager/ffmpeg.exe").Length / 1MB
+            Write-Host "ffmpeg.exe found! Size: $([math]::Round($size, 2)) MB"
+            
+            # 测试 ffmpeg 是否可以运行
+            & "dist/VoiceManager/ffmpeg.exe" -version
           } else {
-            Write-Host "WARNING: ffmpeg.exe not found!"
+            Write-Error "ffmpeg.exe NOT found!"
+            exit 1
           }
 
       - name: Upload Windows artifact
@@ -69,7 +98,7 @@ jobs:
           path: dist/VoiceManager/
 
   build-macos:
-    runs-on: macos-13  # Intel Mac
+    runs-on: macos-14  # Apple Silicon Mac
     steps:
       - uses: actions/checkout@v4
 
@@ -91,15 +120,14 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          # 查找 ffmpeg 路径
-          FFMPEG_PATH=$(which ffmpeg)
-          FFPROBE_PATH=$(which ffprobe)
-          echo "ffmpeg path: $FFMPEG_PATH"
-          echo "ffprobe path: $FFPROBE_PATH"
-
+          FFMPEG=$(which ffmpeg)
+          FFPROBE=$(which ffprobe)
+          echo "ffmpeg: $FFMPEG"
+          echo "ffprobe: $FFPROBE"
+          
           pyinstaller --noconfirm --onedir --windowed --name "VoiceManager" \
-            --add-binary "$FFMPEG_PATH:Frameworks" \
-            --add-binary "$FFPROBE_PATH:Frameworks" \
+            --add-binary "$FFMPEG:Frameworks" \
+            --add-binary "$FFPROBE:Frameworks" \
             --hidden-import pilk \
             --hidden-import pilk._pilk \
             --hidden-import pydub \
@@ -108,20 +136,17 @@ jobs:
             --osx-bundle-identifier com.voicemanager.app \
             voice_manager.py
 
-      - name: Verify and fix macOS App Bundle
+      - name: Verify build
         run: |
-          echo "Build contents:"
-          ls -la dist/
-
-          # PyInstaller with --windowed on macOS creates .app automatically
-          if [ -d "dist/VoiceManager.app" ]; then
-            echo "App bundle created successfully"
-            ls -la "dist/VoiceManager.app/Contents/"
-            ls -la "dist/VoiceManager.app/Contents/MacOS/" || true
-            ls -la "dist/VoiceManager.app/Contents/Frameworks/" || true
+          echo "=== Build contents ==="
+          ls -la dist/VoiceManager.app/Contents/Frameworks/ || true
+          
+          if [ -f "dist/VoiceManager.app/Contents/Frameworks/ffmpeg" ]; then
+            echo "ffmpeg found!"
+            dist/VoiceManager.app/Contents/Frameworks/ffmpeg -version
           else
-            echo "ERROR: App bundle not created!"
-            ls -la dist/
+            echo "ERROR: ffmpeg NOT found!"
+            exit 1
           fi
 
       - name: Upload macOS artifact
@@ -130,24 +155,3 @@ jobs:
           name: VoiceManager-macOS
           path: dist/VoiceManager.app/
 
-  release:
-    needs: [build-windows, build-macos]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create ZIP archives
-        run: |
-          cd VoiceManager-Windows && zip -r ../VoiceManager-Windows.zip . && cd ..
-          cd VoiceManager-macOS && zip -r ../VoiceManager-macOS.zip . && cd ..
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            VoiceManager-Windows.zip
-            VoiceManager-macOS.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -125,37 +125,58 @@ class AudioConverter:
     def get_ffmpeg_path() -> str:
         """获取 ffmpeg 路径"""
         import platform
+        import shutil
         is_windows = platform.system() == 'Windows'
         is_macos = platform.system() == 'Darwin'
         ffmpeg_name = 'ffmpeg.exe' if is_windows else 'ffmpeg'
 
         # 打包后的应用：优先使用打包目录中的 ffmpeg
         if getattr(sys, 'frozen', False):
+            print(f"[ffmpeg] 运行在打包模式, frozen={sys.frozen}")
+            print(f"[ffmpeg] sys.executable={sys.executable}")
+
             if hasattr(sys, '_MEIPASS'):
                 # PyInstaller onefile 模式
+                print(f"[ffmpeg] _MEIPASS={sys._MEIPASS}")
                 ffmpeg = os.path.join(sys._MEIPASS, ffmpeg_name)
                 if os.path.exists(ffmpeg):
+                    print(f"[ffmpeg] 找到 (onefile): {ffmpeg}")
                     return ffmpeg
             else:
                 # PyInstaller onedir 模式
                 base_path = os.path.dirname(sys.executable)
+                print(f"[ffmpeg] onedir base_path={base_path}")
+
                 if is_windows:
                     # Windows: exe 同目录或 _internal 目录
                     candidates = [
                         os.path.join(base_path, ffmpeg_name),
                         os.path.join(base_path, '_internal', ffmpeg_name),
                     ]
+                    print(f"[ffmpeg] Windows 候选路径: {candidates}")
                     for ffmpeg in candidates:
                         if os.path.exists(ffmpeg):
+                            print(f"[ffmpeg] 找到 (onedir): {ffmpeg}")
                             return ffmpeg
+                    # 列出目录内容以便调试
+                    print(f"[ffmpeg] 目录内容 ({base_path}):")
+                    try:
+                        for f in os.listdir(base_path)[:20]:
+                            print(f"  - {f}")
+                    except Exception as e:
+                        print(f"  列目录失败: {e}")
+
                 elif is_macos:
                     # macOS: Frameworks 目录
                     app_path = os.path.dirname(os.path.dirname(base_path))
                     ffmpeg = os.path.join(app_path, 'Frameworks', ffmpeg_name)
+                    print(f"[ffmpeg] macOS Frameworks 路径: {ffmpeg}")
                     if os.path.exists(ffmpeg):
+                        print(f"[ffmpeg] 找到 (Frameworks): {ffmpeg}")
                         return ffmpeg
 
         # 未打包或打包目录中没有 ffmpeg：使用系统安装的版本
+        print("[ffmpeg] 尝试查找系统安装的 ffmpeg...")
         if is_windows:
             system_ffmpeg_paths = [
                 r'C:\ProgramData\chocolatey\bin\ffmpeg.exe',  # Chocolatey
@@ -173,8 +194,16 @@ class AudioConverter:
 
         for path in system_ffmpeg_paths:
             if path and os.path.exists(path):
+                print(f"[ffmpeg] 找到系统版本: {path}")
                 return path
 
+        # 最后尝试 PATH
+        which_ffmpeg = shutil.which(ffmpeg_name)
+        if which_ffmpeg:
+            print(f"[ffmpeg] 在 PATH 中找到: {which_ffmpeg}")
+            return which_ffmpeg
+
+        print(f"[ffmpeg] 未找到，使用默认名称: {ffmpeg_name}")
         return ffmpeg_name  # 使用 PATH 中的 ffmpeg
 
     @staticmethod
@@ -187,6 +216,19 @@ class AudioConverter:
             # 使用 subprocess 直接调用 ffmpeg，避免库冲突
             ffmpeg = AudioConverter.get_ffmpeg_path()
             print(f"使用 ffmpeg: {ffmpeg}")
+
+            # 检查 ffmpeg 是否存在
+            if not os.path.isabs(ffmpeg) or not os.path.exists(ffmpeg):
+                # 如果不是绝对路径或文件不存在，尝试 which/where
+                import shutil
+                resolved = shutil.which(ffmpeg)
+                if resolved:
+                    print(f"[ffmpeg] 解析后路径: {resolved}")
+                    ffmpeg = resolved
+                else:
+                    print(f"[ffmpeg] 错误: ffmpeg 未找到! 路径: {ffmpeg}")
+                    print(f"[ffmpeg] 请确保已安装 ffmpeg 并添加到系统 PATH")
+                    return None
 
             # 创建临时 PCM 文件
             with tempfile.NamedTemporaryFile(suffix='.pcm', delete=False) as f:
